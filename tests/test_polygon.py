@@ -110,3 +110,18 @@ def test_run_writes_process_report():
         assert (proc / f).exists(), f
     assert list((proc / "2_tiles").glob("*.png"))
     assert (folder / f"{folder.name}.geojson").exists()
+
+
+def test_ignores_undimmed_tile_without_border():
+    """Google sometimes returns one tile with no dimming; it has no red edge."""
+    from tests.fake_tiles import empty_fetcher
+    real = make_fetcher([SHAPE])
+    place = make_place((12.915, 77.605, 12.957, 77.657))
+    z = google_tiles.choose_zoom(place.bbox)
+    x0, y0, _, _ = geo.bbox_to_tile_range(place.bbox, z)
+
+    def fetch(zz, x, y):
+        return empty_fetcher(zz, x, y) if (x, y) == (x0, y0) else real(zz, x, y)
+
+    polys, _ = place_polygons(place, fetch)
+    assert len(polys) == 1

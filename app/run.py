@@ -4,7 +4,7 @@ Usage:
     python -m app.run "Koramangala, Bangalore"
 
 Creates:
-    output/<place>/
+    output/<input>/
     ├── <place>.geojson            final result (paste into geojson.io)
     └── process/
         ├── process.md             what happened at each step
@@ -14,7 +14,7 @@ Creates:
         ├── 2_tiles_stitched.png   all tiles glued together, with the tile grid
         ├── 3_mask.png             white = inside, black = outside
         └── 4_trace.png            traced outline + its points on top of the tiles
-    output/<place>/summary.json    key numbers for this run
+    output/<input>/summary.json    key numbers for this run
 """
 from __future__ import annotations
 
@@ -41,7 +41,8 @@ POINT_BGR = (0, 140, 255)      # our points (orange)
 
 
 def slugify(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_") or "place"
+    """Folder-safe name; keeps letters in any language (e.g. 東京)."""
+    return re.sub(r"\W+", "_", text.lower()).strip("_") or "place"
 
 
 # ---------- images ----------------------------------------------------------
@@ -100,7 +101,7 @@ def run(query: str, name: Optional[str] = None, max_tiles: int = 64,
     place = parse_response(data)
     t_search = time.time() - t0
 
-    folder = OUTPUT_DIR / slugify(name or (place.full_name or query).split(",")[0])
+    folder = OUTPUT_DIR / slugify(name or query)   # one folder per input, never shared
     proc = folder / "process"
     (proc / "2_tiles").mkdir(parents=True, exist_ok=True)
     (proc / "1_search_response.json").write_text(json.dumps(data, ensure_ascii=False))
@@ -239,13 +240,20 @@ def run(query: str, name: Optional[str] = None, max_tiles: int = 64,
     result_path = folder / f"{folder.name}.geojson"
     if geojson:
         result_path.write_text(json.dumps(geojson, indent=2))
-    area_km2 = (mask > 0).sum() * (mpp ** 2) / 1e6
+    filled = np.zeros(mask.shape, np.uint8)
+    ox, oy = mosaic.x0 * size, mosaic.y0 * size
+    for poly in polygons:
+        rings = [np.array([[x - ox, y - oy] for x, y in
+                           (geo.latlng_to_pixel(lat, lng, mosaic.z) for lng, lat in ring)], np.int32)
+                 for ring in poly]
+        cv2.fillPoly(filled, rings, 255)   # holes stay empty
+    area_km2 = (filled > 0).sum() * (mpp ** 2) / 1e6
     md += [
         "## Result",
         "",
         f"- {len(polygons)} polygon(s), {final_points} points"
         + (f", {sum(len(p) - 1 for p in polygons)} hole(s)" if polygons else ""),
-        f"- Area ≈ **{area_km2:,.1f} km²** (pixel count × pixel area, approximate)",
+        f"- Area ≈ **{area_km2:,.1f} km²** (polygon pixels × pixel area, approximate)",
         f"- GeoJSON: [../{result_path.name}](../{result_path.name}) — paste into geojson.io",
         "",
     ]

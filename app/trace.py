@@ -15,6 +15,8 @@ SIMPLIFY_PX = 1.5         # Douglas-Peucker tolerance in pixels
 DIM_MAX_ALPHA = 80        # Google's outside dimming is a faint gray (alpha ~27-42)
 DIM_MAX_SPREAD = 30       # ...and neutral: its B, G, R values are close together
 DIM_MAX_BRIGHT = 230      # ...and not white (label halos are white)
+MIN_RED_SUPPORT = 0.10    # a real edge has Google's red dashes along >= 10% of it
+RED_NEAR_PX = 3           # how close a red pixel must be to count
 
 
 def inside_mask(image: np.ndarray) -> Optional[np.ndarray]:
@@ -34,6 +36,28 @@ def inside_mask(image: np.ndarray) -> Optional[np.ndarray]:
     # Remove tiny noise (anti-aliasing, label dots)
     kernel = np.ones((3, 3), np.uint8)
     return cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+
+
+def red_border(image: np.ndarray) -> np.ndarray:
+    """Pixels within RED_NEAR_PX of Google's red dashed border."""
+    b, g, r, a = (image[..., i].astype(np.int16) for i in range(4))
+    red = ((r > 150) & (r - g > 60) & (a > 0)).astype(np.uint8)
+    k = 2 * RED_NEAR_PX + 1
+    return cv2.dilate(red, np.ones((k, k), np.uint8)) > 0
+
+
+def has_red_edge(contour: np.ndarray, near_red: np.ndarray) -> bool:
+    """True if Google drew its red border along this outline.
+
+    Filters out artifacts with no border, e.g. a single tile Google returned
+    without the gray dimming. Points on the image edge are ignored.
+    """
+    h, w = near_red.shape
+    pts = contour.reshape(-1, 2)
+    inner = pts[(pts[:, 0] > 0) & (pts[:, 1] > 0) & (pts[:, 0] < w - 1) & (pts[:, 1] < h - 1)]
+    if len(inner) == 0:
+        return True
+    return near_red[inner[:, 1], inner[:, 0]].mean() >= MIN_RED_SUPPORT
 
 
 def touches_edges(mask: np.ndarray) -> dict:
@@ -62,18 +86,20 @@ def mask_to_polygons(mask: np.ndarray, mosaic: Mosaic) -> List[List[List[List[fl
     if hierarchy is None:
         return []
     hierarchy = hierarchy[0]
-    outers = [cv2.contourArea(c) for c, h in zip(contours, hierarchy) if h[3] == -1]
+    near_red = red_border(mosaic.image)
+    real = [has_red_edge(c, near_red) for c in contours]
+    outers = [cv2.contourArea(c) for c, h, ok in zip(contours, hierarchy, real) if h[3] == -1 and ok]
     min_area = max(MIN_AREA_PX, MIN_PART_FRACTION * max(outers, default=0))
     polygons = []
     for i, cnt in enumerate(contours):
         if hierarchy[i][3] != -1:          # this is a hole; handled with its parent
             continue
-        if cv2.contourArea(cnt) < min_area:
+        if cv2.contourArea(cnt) < min_area or not real[i]:
             continue
         rings = [cv2.approxPolyDP(cnt, SIMPLIFY_PX, True)]
         child = hierarchy[i][2]
         while child != -1:
-            if cv2.contourArea(contours[child]) >= min_area:
+            if cv2.contourArea(contours[child]) >= min_area and real[child]:
                 rings.append(cv2.approxPolyDP(contours[child], SIMPLIFY_PX, True))
             child = hierarchy[child][0]
         polygon = [_ring_to_lnglat(r, mosaic) for r in rings if len(r) >= 3]
