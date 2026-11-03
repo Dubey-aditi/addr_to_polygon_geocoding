@@ -14,6 +14,7 @@ Creates:
         ├── 2_tiles_stitched.png   all tiles glued together, with the tile grid
         ├── 3_mask.png             white = inside, black = outside
         └── 4_trace.png            traced outline + its points on top of the tiles
+    output/<place>/summary.json    key numbers for this run
 """
 from __future__ import annotations
 
@@ -153,9 +154,16 @@ def run(query: str, name: Optional[str] = None, max_tiles: int = 64,
         md.append(f"| {i} | {a['zoom']} | {x0}, {y0} → {x1}, {y1} | {a['tiles']} | {a['result']} |")
     md.append("")
 
+    summary = {"query": query, "status": "ok", "resolved_name": place.full_name,
+               "place_type": place.place_type, "place_id": place.place_id,
+               "search_s": round(t_search, 2), "tiles_s": round(t_tiles, 2),
+               "attempts": len(log), "tiles_downloaded": sum(a["tiles"] for a in log)}
+
     if mosaic is None:
         md += ["## Result", "", f"**No polygon:** {error}", ""]
         (proc / "process.md").write_text("\n".join(md))
+        summary.update(status="no_boundary", error=error)
+        (folder / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
         print(f"{place.full_name}: no boundary\nsaved -> {folder}")
         return folder
 
@@ -242,6 +250,11 @@ def run(query: str, name: Optional[str] = None, max_tiles: int = 64,
         "",
     ]
     (proc / "process.md").write_text("\n".join(md))
+    summary.update(zoom=mosaic.z, grid=f"{cols}x{rows}", meters_per_pixel=round(mpp, 1),
+                   polygons=len(polygons), holes=sum(len(p) - 1 for p in polygons),
+                   points=final_points, area_km2=round(area_km2, 2),
+                   status="ok" if polygons else "no_boundary")
+    (folder / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
     print(f"{place.full_name}: {len(polygons)} polygon(s), {final_points} points, zoom {mosaic.z}, "
           f"{cols * rows} tiles")
     print(f"saved -> {folder}")
